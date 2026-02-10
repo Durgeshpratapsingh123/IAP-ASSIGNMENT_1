@@ -1,4 +1,7 @@
 # 📡 Assignment 1 – Internet Architecture and Protocols (CS60008)
+# NAME : DURGESH PRATAP SINGH (25CS60R78)
+# NAME : SHIVANSH MAURYA (25CS60R57)
+# NAME : SHIVAM RANA (25CS60R76)
 
 ## Threaded Chat Server with Authentication, Rooms, and Publish–Subscribe
 
