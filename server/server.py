@@ -11,18 +11,17 @@ PORT = 9000
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_FILE = os.path.join(BASE_DIR, "users.json")
 
+# ---------- GLOBAL STATE ----------
 clients = {}          # socket -> username
-active_users = {}    # username -> socket
-user_rooms = {}      # socket -> room
-rooms = {"lobby": set()}
-
-subscriptions = {}   # publisher -> set(subscribers)
+active_users = {}     # username -> socket
+user_rooms = {}       # socket -> room
+rooms = {"lobby": set()}  # room -> set(sockets)
+subscriptions = {}    # publisher -> set(subscribers)
 
 lock = threading.Lock()
 
 
 # ---------- AUTH ----------
-
 def load_users():
     with open(USERS_FILE, "r") as f:
         return json.load(f)
@@ -32,17 +31,84 @@ users = load_users()
 
 def authenticate(username, password):
     return username in users and bcrypt.checkpw(
-        password.encode(), users[username].encode()
+        password.encode(),
+        users[username].encode()
     )
 
 
-# ---------- MESSAGING ----------
-
+# ---------- UTILITY ----------
 def send(sock, message):
     try:
         sock.sendall((message + "\n").encode())
     except:
         pass
+
+
+def broadcast_room(room, message, exclude=None):
+    with lock:
+        members = rooms.get(room, set()).copy()
+
+    for member in members:
+        if member != exclude:
+            send(member, message)
+
+
+# ---------- ROOM MANAGEMENT ----------
+def join_room(sock, username, new_room):
+    with lock:
+        old_room = user_rooms.get(sock, "lobby")
+
+        if old_room == new_room:
+            return f"[SERVER] You are already in room '{new_room}'"
+
+        rooms[old_room].discard(sock)
+        rooms.setdefault(new_room, set()).add(sock)
+        user_rooms[sock] = new_room
+
+    return f"[SERVER] Joined room '{new_room}'"
+
+
+def leave_room(sock, username):
+    return join_room(sock, username, "lobby")
+
+
+def list_rooms():
+    with lock:
+        return ", ".join(rooms.keys())
+
+
+# ---------- SUBSCRIPTION MANAGEMENT ----------
+def subscribe(subscriber, publisher):
+    with lock:
+        if publisher not in active_users:
+            return False
+
+        sub_sock = active_users.get(subscriber)
+        pub_sock = active_users.get(publisher)
+
+        if not sub_sock or not pub_sock:
+            return False
+
+        # Restrict subscription to same room
+        if user_rooms.get(sub_sock) != user_rooms.get(pub_sock):
+            return False
+
+        subscriptions.setdefault(publisher, set()).add(subscriber)
+
+    return True
+
+
+def unsubscribe(subscriber, publisher):
+    with lock:
+        subscriptions.get(publisher, set()).discard(subscriber)
+
+
+def list_subscriptions(user):
+    with lock:
+        return [
+            pub for pub, subs in subscriptions.items()
+            if user in subs
+        ]
 
 
 def send_to_subscribers(publisher, message):
@@ -55,37 +121,14 @@ def send_to_subscribers(publisher, message):
             send(sock, message)
 
 
-# ---------- SUBSCRIPTION HELPERS ----------
-
-def subscribe(subscriber, publisher):
-    with lock:
-        if publisher not in active_users:
-            return False
-
-        subscriptions.setdefault(publisher, set()).add(subscriber)
-    return True
-
-
-def unsubscribe(subscriber, publisher):
-    with lock:
-        subscriptions.get(publisher, set()).discard(subscriber)
-
-
-def list_subscriptions(user):
-    with lock:
-        pubs = [
-            pub for pub, subs in subscriptions.items() if user in subs
-        ]
-    return pubs
-
-
 # ---------- CLIENT HANDLER ----------
-
 def handle_client(sock, addr):
     print(f"[+] New connection from {addr[0]}:{addr[1]}")
 
     send(sock, "[SERVER] Welcome to the chat server")
     send(sock, "[SERVER] Login using: LOGIN <username> <password>")
+
+    username = None
 
     try:
         data = sock.recv(1024).decode().strip()
@@ -103,7 +146,7 @@ def handle_client(sock, addr):
             sock.close()
             return
 
-        # ----- FORCE LOGOUT -----
+        # ----- FORCE LOGOUT EXISTING SESSION -----
         with lock:
             if username in active_users:
                 old_sock = active_users[username]
@@ -117,7 +160,7 @@ def handle_client(sock, addr):
 
         print(f"[+] User '{username}' authenticated")
         send(sock, "[SERVER] Login successful")
-        send(sock, "[SERVER] Commands: /subscribe <user>, /unsubscribe <user>, /subs")
+        send(sock, "[SERVER] Available commands: /join, /leave, /rooms, /subscribe, /unsubscribe, /subs")
 
         # ----- MAIN LOOP -----
         while True:
@@ -129,13 +172,29 @@ def handle_client(sock, addr):
             if not msg:
                 continue
 
-            # ----- SUB COMMANDS -----
+            # ----- ROOM COMMANDS -----
+            if msg.startswith("/join "):
+                room = msg.split(maxsplit=1)[1]
+                response = join_room(sock, username, room)
+                send(sock, response)
+                continue
+
+            if msg == "/leave":
+                response = leave_room(sock, username)
+                send(sock, response)
+                continue
+
+            if msg == "/rooms":
+                send(sock, f"[SERVER] Active rooms: {list_rooms()}")
+                continue
+
+            # ----- SUBSCRIPTION COMMANDS -----
             if msg.startswith("/subscribe "):
                 target = msg.split(maxsplit=1)[1]
                 if subscribe(username, target):
                     send(sock, f"[SERVER] Subscribed to {target}")
                 else:
-                    send(sock, "[ERROR] User not online")
+                    send(sock, "[ERROR] Cannot subscribe (user offline or different room)")
                 continue
 
             if msg.startswith("/unsubscribe "):
@@ -149,7 +208,7 @@ def handle_client(sock, addr):
                 send(sock, f"[SERVER] Subscriptions: {', '.join(pubs) or 'none'}")
                 continue
 
-            # ----- PUBLISH MESSAGE -----
+            # ----- NORMAL MESSAGE (PUBLISH) -----
             ts = time.strftime("%H:%M:%S")
             send_to_subscribers(
                 username,
@@ -161,8 +220,11 @@ def handle_client(sock, addr):
 
     finally:
         with lock:
-            username = clients.pop(sock, None)
-            user_rooms.pop(sock, None)
+            clients.pop(sock, None)
+            room = user_rooms.pop(sock, None)
+
+            if room:
+                rooms.get(room, set()).discard(sock)
 
             if username and active_users.get(username) == sock:
                 active_users.pop(username)
@@ -175,7 +237,6 @@ def handle_client(sock, addr):
 
 
 # ---------- SERVER LOOP ----------
-
 def start_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((HOST, PORT))
@@ -194,3 +255,4 @@ def start_server():
 
 if __name__ == "__main__":
     start_server()
+
