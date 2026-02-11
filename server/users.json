@@ -2,5 +2,8 @@
   "DPS": "$2b$12$4pAJiSsMpaRhRm1/F81mB.FQlhNZzeShJoBzxNXIba89FbgFbFaJa",
   "DB":  "$2b$12$IA0xdCeYQc200cGdXsggbOviJsyIWdQr/kviGLKN8efGsfySTsrhq",
   "SM": "$2b$12$IA0xdCeYQc200cGdXsggbOviJsyIWdQr/kviGLKN8efGsfySTsrhq",
-  "SR": "$2b$12$IA0xdCeYQc200cGdXsggbOviJsyIWdQr/kviGLKN8efGsfySTsrhq"
+  "SR": "$2b$12$IA0xdCeYQc200cGdXsggbOviJsyIWdQr/kviGLKN8efGsfySTsrhq",
+  "CP" : "$2b$12$IA0xdCeYQc200cGdXsggbOviJsyIWdQr/kviGLKN8efGsfySTsrhq",
+  "AN" : "$2b$12$IA0xdCeYQc200cGdXsggbOviJsyIWdQr/kviGLKN8efGsfySTsrhq",
+  "AD" : "$2b$12$IA0xdCeYQc200cGdXsggbOviJsyIWdQr/kviGLKN8efGsfySTsrhq"
 }
