@@ -1,4 +1,4 @@
-# 📡 Assignment 1 -- Internet Architecture and Protocols (CS60008)
+#  Assignment 1 -- Internet Architecture and Protocols (CS60008)
 
 ## NAME : DURGESH PRATAP SINGH (25CS60R78)
 
