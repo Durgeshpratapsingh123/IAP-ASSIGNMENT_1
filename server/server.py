@@ -4,8 +4,6 @@ import time
 import json
 import bcrypt
 import os
-import ssl
-import redis
 
 HOST = "0.0.0.0"
 PORT = 9000
@@ -13,22 +11,23 @@ PORT = 9000
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 USERS_FILE = os.path.join(BASE_DIR, "users.json")
 
-# Redis connection
-r = redis.Redis(host="redis", port=6379, decode_responses=True)
-
-clients = {}           # socket -> username
-active_users = {}      # username -> socket
-subscriptions = {}     # publisher -> set(subscribers)
+# ---------- GLOBAL STATE ----------
+clients = {}          # socket -> username
+active_users = {}     # username -> socket
+user_rooms = {}       # socket -> room
+rooms = {"lobby": set()}  # room -> set(sockets)
+subscriptions = {}    # publisher -> set(subscribers)
 
 lock = threading.Lock()
 
-# ---------------- AUTH ----------------
 
+# ---------- AUTH ----------
 def load_users():
     with open(USERS_FILE, "r") as f:
         return json.load(f)
 
 users = load_users()
+
 
 def authenticate(username, password):
     return username in users and bcrypt.checkpw(
@@ -36,197 +35,224 @@ def authenticate(username, password):
         users[username].encode()
     )
 
-# ---------------- UTIL ----------------
 
+# ---------- UTILITY ----------
 def send(sock, message):
     try:
         sock.sendall((message + "\n").encode())
     except:
         pass
 
-# ---------------- REDIS ROOM MANAGEMENT ----------------
 
-def join_room(username, room):
+def broadcast_room(room, message, exclude=None):
+    with lock:
+        members = rooms.get(room, set()).copy()
 
-    old_room = r.hget("user_rooms", username)
+    for member in members:
+        if member != exclude:
+            send(member, message)
 
-    if old_room:
-        r.srem(f"room:{old_room}", username)
 
-    r.sadd(f"room:{room}", username)
-    r.hset("user_rooms", username, room)
+# ---------- ROOM MANAGEMENT ----------
+def join_room(sock, username, new_room):
+    with lock:
+        old_room = user_rooms.get(sock, "lobby")
 
-def get_room(username):
-    return r.hget("user_rooms", username)
+        if old_room == new_room:
+            return f"[SERVER] You are already in room '{new_room}'"
+
+        rooms[old_room].discard(sock)
+        rooms.setdefault(new_room, set()).add(sock)
+        user_rooms[sock] = new_room
+
+    return f"[SERVER] Joined room '{new_room}'"
+
+
+def leave_room(sock, username):
+    return join_room(sock, username, "lobby")
+
 
 def list_rooms():
-    keys = r.keys("room:*")
-    return [k.split(":")[1] for k in keys]
+    with lock:
+        return ", ".join(rooms.keys())
 
-# ---------------- REDIS PUBSUB ----------------
 
-def redis_listener():
+# ---------- SUBSCRIPTION MANAGEMENT ----------
+def subscribe(subscriber, publisher):
+    with lock:
+        if publisher not in active_users:
+            return False
 
-    pubsub = r.pubsub()
-    pubsub.subscribe("chat")
+        sub_sock = active_users.get(subscriber)
+        pub_sock = active_users.get(publisher)
 
-    for message in pubsub.listen():
+        if not sub_sock or not pub_sock:
+            return False
 
-        if message["type"] != "message":
-            continue
+        # Restrict subscription to same room
+        if user_rooms.get(sub_sock) != user_rooms.get(pub_sock):
+            return False
 
-        data = json.loads(message["data"])
+        subscriptions.setdefault(publisher, set()).add(subscriber)
 
-        publisher = data["user"]
-        text = data["msg"]
+    return True
 
-        with lock:
-            subs = subscriptions.get(publisher, set())
 
-            for user in subs:
-                sock = active_users.get(user)
-                if sock:
-                    send(sock, f"[{time.strftime('%H:%M:%S')}] {publisher}: {text}")
+def unsubscribe(subscriber, publisher):
+    with lock:
+        subscriptions.get(publisher, set()).discard(subscriber)
 
-# ---------------- CLIENT THREAD ----------------
 
+def list_subscriptions(user):
+    with lock:
+        return [
+            pub for pub, subs in subscriptions.items()
+            if user in subs
+        ]
+
+
+def send_to_subscribers(publisher, message):
+    with lock:
+        subs = subscriptions.get(publisher, set()).copy()
+
+    for subscriber in subs:
+        sock = active_users.get(subscriber)
+        if sock:
+            send(sock, message)
+
+
+# ---------- CLIENT HANDLER ----------
 def handle_client(sock, addr):
+    print(f"[+] New connection from {addr[0]}:{addr[1]}")
 
-    send(sock, "[SERVER] LOGIN <username> <password>")
+    send(sock, "[SERVER] Welcome to the chat server")
+    send(sock, "[SERVER] Login using: LOGIN <username> <password>")
 
     username = None
 
     try:
-
         data = sock.recv(1024).decode().strip()
         parts = data.split()
 
         if len(parts) != 3 or parts[0] != "LOGIN":
-            send(sock, "Invalid login")
+            send(sock, "[ERROR] Invalid login format")
+            sock.close()
             return
 
         _, username, password = parts
 
         if not authenticate(username, password):
-            send(sock, "Auth failed")
+            send(sock, "[ERROR] Authentication failed")
+            sock.close()
             return
 
+        # ----- FORCE LOGOUT EXISTING SESSION -----
         with lock:
-
             if username in active_users:
-                old = active_users[username]
-                send(old, "Logged out due to new login")
-                old.close()
+                old_sock = active_users[username]
+                send(old_sock, "[SERVER] Logged out due to new login")
+                old_sock.close()
 
             clients[sock] = username
             active_users[username] = sock
+            rooms["lobby"].add(sock)
+            user_rooms[sock] = "lobby"
 
-        join_room(username, "lobby")
+        print(f"[+] User '{username}' authenticated")
+        send(sock, "[SERVER] Login successful")
+        send(sock, "[SERVER] Available commands: /join, /leave, /rooms, /subscribe, /unsubscribe, /subs")
 
-        send(sock, "Login successful")
-
+        # ----- MAIN LOOP -----
         while True:
-
-            try:
-                data = sock.recv(1024)
-                if not data:
-                    break
-            except:
+            data = sock.recv(1024)
+            if not data:
                 break
 
             msg = data.decode().strip()
-
-            # -------- JOIN ROOM --------
-
-            if msg.startswith("/join "):
-                room = msg.split()[1]
-                join_room(username, room)
-                send(sock, f"[SERVER] Joined {room}")
+            if not msg:
                 continue
 
-            # -------- LIST ROOMS --------
+            # ----- ROOM COMMANDS -----
+            if msg.startswith("/join "):
+                room = msg.split(maxsplit=1)[1]
+                response = join_room(sock, username, room)
+                send(sock, response)
+                continue
+
+            if msg == "/leave":
+                response = leave_room(sock, username)
+                send(sock, response)
+                continue
 
             if msg == "/rooms":
-                send(sock, str(list_rooms()))
+                send(sock, f"[SERVER] Active rooms: {list_rooms()}")
                 continue
 
-            # -------- SUBSCRIBE --------
-
+            # ----- SUBSCRIPTION COMMANDS -----
             if msg.startswith("/subscribe "):
-
-                target = msg.split()[1]
-
-                with lock:
-
-                    if target not in subscriptions:
-                        subscriptions[target] = set()
-
-                    subscriptions[target].add(username)
-
-                send(sock, f"[SERVER] Subscribed to {target}")
+                target = msg.split(maxsplit=1)[1]
+                if subscribe(username, target):
+                    send(sock, f"[SERVER] Subscribed to {target}")
+                else:
+                    send(sock, "[ERROR] Cannot subscribe (user offline or different room)")
                 continue
-
-            # -------- UNSUBSCRIBE --------
 
             if msg.startswith("/unsubscribe "):
-
-                target = msg.split()[1]
-
-                with lock:
-                    if target in subscriptions:
-                        subscriptions[target].discard(username)
-
+                target = msg.split(maxsplit=1)[1]
+                unsubscribe(username, target)
                 send(sock, f"[SERVER] Unsubscribed from {target}")
                 continue
 
-            # -------- PUBLISH MESSAGE --------
+            if msg == "/subs":
+                pubs = list_subscriptions(username)
+                send(sock, f"[SERVER] Subscriptions: {', '.join(pubs) or 'none'}")
+                continue
 
-            payload = {
-                "user": username,
-                "msg": msg
-            }
+            # ----- NORMAL MESSAGE (PUBLISH) -----
+            ts = time.strftime("%H:%M:%S")
+            send_to_subscribers(
+                username,
+                f"[{ts}] {username}: {msg}"
+            )
 
-            r.publish("chat", json.dumps(payload))
+    except Exception as e:
+        print(f"[!] Error with {addr}: {e}")
 
     finally:
-
         with lock:
             clients.pop(sock, None)
-            active_users.pop(username, None)
+            room = user_rooms.pop(sock, None)
 
-        if username:
-            room = get_room(username)
             if room:
-                r.srem(f"room:{room}", username)
+                rooms.get(room, set()).discard(sock)
 
+            if username and active_users.get(username) == sock:
+                active_users.pop(username)
+
+            for subs in subscriptions.values():
+                subs.discard(username)
+
+        print(f"[-] User '{username}' disconnected")
         sock.close()
 
-# ---------------- SERVER ----------------
 
+# ---------- SERVER LOOP ----------
 def start_server():
-
-    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    context.load_cert_chain("cert.pem", "key.pem")
-
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.bind((HOST, PORT))
     server.listen()
 
-    server = context.wrap_socket(server, server_side=True)
-
-    print("Secure chat server started")
-
-    threading.Thread(target=redis_listener, daemon=True).start()
+    print(f"[*] Chat server running on port {PORT}")
 
     while True:
-
         sock, addr = server.accept()
-
         threading.Thread(
             target=handle_client,
             args=(sock, addr),
             daemon=True
         ).start()
 
+
 if __name__ == "__main__":
     start_server()
+

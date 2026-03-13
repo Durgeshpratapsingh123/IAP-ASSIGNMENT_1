@@ -1,327 +1,203 @@
-# 📡 Assignment 1 -- Internet Architecture and Protocols (CS60008)
+# 📡 Assignment 1 – Internet Architecture and Protocols (CS60008)
 
 ## NAME : DURGESH PRATAP SINGH (25CS60R78)
-
 ## NAME : SHIVANSH MAURYA (25CS60R57)
-
 ## NAME : SHIVAM RANA (25CS60R76)
 
-# Threaded Secure Chat Server with Authentication, Rooms, Redis, and Publish--Subscribe
+## Threaded Chat Server with Authentication, Rooms, and Publish–Subscribe
 
-**Language:** Python 3.9+\
-**Course:** Internet Architecture and Protocols (CS60008)\
-**Assignment:** Assignment--1
+**Language:** Python 3.9+  
+**Course:** Internet Architecture and Protocols (CS60008)  
+**Assignment:** Assignment–1  
 
-------------------------------------------------------------------------
+---
 
-# 1. Introduction
+## 1. Introduction
 
-This project implements a **secure multi-client chat system** using
-**TCP sockets and threading in Python**.
+This project implements a **TCP-based multi-client chat system** using **Python sockets and threading**, as required for Assignment–1 of the course *Internet Architecture and Protocols (CS60008)*.
 
-The system demonstrates several important concepts from **Internet
-Architecture and Distributed Systems**, including:
+The system is developed incrementally to demonstrate core networking and systems concepts including:
 
--   Blocking I/O networking
--   Thread-based concurrency
--   Secure authentication
--   Session management
--   Duplicate login handling
--   Chat rooms
--   Publish--Subscribe communication model
--   Distributed shared state using Redis
--   TLS encryption
--   Containerized deployment using Docker
+- Blocking I/O
+- Thread-based concurrency
+- Secure authentication
+- Session management
+- Duplicate login handling
+- Chat rooms
+- Publish–Subscribe communication model
 
-The final system supports **multiple chat server instances connected
-through Redis**, enabling **scalable real-time messaging**.
+⚠️ **Scope of this README**  
+This document describes the implementation **up to Problem-5 (Publish–Subscribe)**.  
+**Redis-based distributed state (Problem-6)** and later components are intentionally excluded.
 
-------------------------------------------------------------------------
+---
 
-# 2. Technologies Used
+## 2. Technologies Used
 
-## Programming Language
+- **Python 3.9+**
+- Standard libraries:
+  - socket
+  - threading
+  - time
+  - json
+  - os
+- External library:
+  - bcrypt (for secure password hashing)
 
--   Python 3.9+
+No high-level frameworks such as FastAPI, asyncio, or WebSockets are used, in strict compliance with assignment constraints.
 
-## Python Libraries
+---
 
--   socket
--   threading
--   time
--   json
--   os
--   ssl
+## 3. Project Structure
 
-## External Libraries
+ASSIGNMENT_1/
+│
+├── client/
+│   └── client.py              # TCP-based chat client
+│
+├── server/
+│   ├── server.py              # Server entry point (listener + thread creation)
+│   ├── client_handler.py      # Per-client logic and protocol handling
+│   └── users.json             # User credentials (bcrypt-hashed)
+│
+└── README.md
 
--   bcrypt -- password hashing
--   redis -- Redis client library
+---
 
-## Infrastructure
+## 4. Design Overview
 
--   Redis (in-memory datastore)
--   Docker
--   Docker Compose
+The server is deliberately split into two components to improve modularity and clarity.
 
-------------------------------------------------------------------------
+### 4.1 server.py – Server Entry Point
 
-# 3. Project Structure
+Responsibilities:
+- Create and bind the TCP socket
+- Listen for incoming client connections
+- Accept connections using socket.accept()
+- Spawn one thread per client
+- Delegate all client-specific logic to client_handler.py
 
-    IAP-ASSIGNMENT_1/
-    │
-    ├── client/
-    │   └── client.py
-    │
-    ├── server/
-    │   ├── server.py
-    │   ├── users.json
-    │   ├── cert.pem
-    │   └── key.pem
-    │
-    ├── docker-compose.yml
-    ├── Dockerfile
-    │
-    └── README.md
+This file contains no application logic and focuses purely on connection management.
 
-------------------------------------------------------------------------
+---
 
-# 4. System Architecture
+### 4.2 client_handler.py – Core Server Logic
 
-    Clients
-       │
-       │ TLS encrypted connection
-       ▼
-    Chat Server (Thread-per-client)
-       │
-       │ Redis client
-       ▼
-    Redis Server
-     ├ Room membership
-     ├ User session mapping
-     └ Pub/Sub messaging
+Responsibilities:
+- Authentication and session creation
+- Duplicate login handling
+- Chat room management
+- Publish–Subscribe logic
+- Message routing
+- Client cleanup on disconnect
 
-Multiple chat servers can run simultaneously while sharing state via
-Redis.
+This separation reflects real-world server design and simplifies future extensions such as Redis and TLS.
 
-------------------------------------------------------------------------
+---
 
-# 5. How to Run the Project
+## 5. How to Run the Project
 
-## Step 1 -- Build Containers
+### 5.1 Start the Server
 
-    docker-compose build
+cd server  
+python server.py
 
-## Step 2 -- Start System
+Expected output:  
+[*] Chat server running on port 9000
 
-    sudo docker-compose down
-    sudo docker-compose up --build
+---
 
-Expected output:
+### 5.2 Start a Client
 
-    redis_1       | Ready to accept connections
-    chatserver_1  | Secure chat server started
+cd client  
+python client.py
 
-## Step 3 -- Connect Client
+---
 
-    openssl s_client -connect localhost:9000
+## 6. Client–Server Protocol
 
-------------------------------------------------------------------------
+### 6.1 Authentication Protocol
 
-# 6. Client--Server Protocol
+On connection, the server sends:
 
-After connection the server sends:
+[SERVER] Login using: LOGIN <username> <password>
 
-    [SERVER] LOGIN <username> <password>
+The client must respond exactly in the following format:
 
-Example:
+LOGIN DPS password123
 
-    LOGIN SM 12345
+Rules:
+- Invalid format → connection closed
+- Invalid credentials → connection closed
+- Valid credentials → authenticated session created
 
-If authentication succeeds:
+Passwords are never stored or transmitted in plaintext.
 
-    Login successful
+---
 
-------------------------------------------------------------------------
+## 7. Problem-1: Thread-Based Chat Server
 
-# 7. Supported Commands
+Objective: Implement a thread-per-client TCP server using blocking I/O.
 
-  Command                                         Description
-  ----------------------------------------------- ----------------------------
-  LOGIN `<username>`{=html} `<password>`{=html}   Authenticate user
-  /join `<room>`{=html}                           Join a chat room
-  /rooms                                          List available rooms
-  /subscribe `<user>`{=html}                      Subscribe to a publisher
-  /unsubscribe `<user>`{=html}                    Remove subscription
-  /subs                                           List current subscriptions
+Features:
+- One thread per client
+- Graceful handling of client disconnects
+- Clear server-side logging
 
-Messages sent without `/` are treated as chat messages.
+---
 
-------------------------------------------------------------------------
+## 8. Problem-2: Authentication
 
-# 8. Problem-1: Thread-Based Chat Server
+- Credentials stored in users.json
+- Passwords hashed using bcrypt
+- Authentication enforced immediately after connection
 
-The server uses a **thread-per-client model**.
+---
 
-    Client connects
-         ↓
-    Server accepts connection
-         ↓
-    New thread created
-         ↓
-    Thread handles client communication
+## 9. Problem-3: Duplicate Login Handling
 
-This allows multiple clients to interact concurrently.
+Policy: Force Logout Existing Session
 
-------------------------------------------------------------------------
+If a user logs in while another session is active, the existing session is terminated and the new login succeeds.
 
-# 9. Problem-2: Authentication
+---
 
-User credentials are stored in:
+## 10. Problem-4: Chat Rooms
 
-    users.json
+Supported commands:
+- /join <room>
+- /leave
+- /rooms
 
-Passwords are hashed using **bcrypt**.
+Each client belongs to exactly one room. Default room is lobby.
 
-Example hash:
+---
 
-    $2b$12$Fhsjdhsjdhjsd...
+## 11. Problem-5: Publish–Subscribe Model
 
-Authentication process:
+Supported commands:
+- /subscribe <user>
+- /unsubscribe <user>
+- /subs
 
-    client password
-          ↓
-    bcrypt.checkpw()
-          ↓
-    hash comparison
+Messages are delivered only to subscribed clients. Message ordering is preserved per publisher.
 
-------------------------------------------------------------------------
+---
 
-# 10. Problem-3: Duplicate Login Handling
+## 12. Thread Safety
 
-Policy implemented:
+All shared state is protected using threading.Lock to avoid race conditions.
 
-**Force Logout Existing Session**
+---
 
-If the same user logs in again:
+## 13. Limitations (Before Redis)
 
-    Existing session → terminated
-    New session → accepted
+- In-memory state only
+- Single server instance
+- No fault tolerance
 
-------------------------------------------------------------------------
+---
 
-# 11. Problem-4: Chat Rooms
+## 14. Conclusion
 
-Users can join rooms using:
-
-    /join <room>
-
-Example:
-
-    /join sports
-
-Rooms are stored in Redis sets:
-
-    room:lobby
-    room:sports
-
-------------------------------------------------------------------------
-
-# 12. Problem-5: Publish--Subscribe Model
-
-Users subscribe to publishers:
-
-    /subscribe <username>
-
-Example:
-
-    /subscribe SM
-
-Messages are delivered only to subscribed users.
-
-------------------------------------------------------------------------
-
-# 13. Problem-6: Redis Integration
-
-Redis provides distributed shared state.
-
-## Room Membership
-
-    SADD room:lobby SM
-    SADD room:lobby SR
-
-## User--Room Mapping
-
-    HSET user_rooms SM lobby
-
-## Cross-Server Messaging
-
-Servers publish messages:
-
-    r.publish("chat", message)
-
-Other servers receive them using Redis Pub/Sub.
-
-------------------------------------------------------------------------
-
-# 14. Problem-7: TLS Security
-
-TLS is implemented using Python's ssl module.
-
-Server loads certificate:
-
-    context.load_cert_chain("cert.pem", "key.pem")
-
-Verify secure connection:
-
-    openssl s_client -connect localhost:9000
-
-Example output:
-
-    TLSv1.3
-    Cipher TLS_AES_256_GCM_SHA384
-
-------------------------------------------------------------------------
-
-# 15. Problem-8: Docker Deployment
-
-Containers used:
-
-    chatserver
-    redis
-
-Start system:
-
-    docker-compose up --build
-
-Docker automatically builds the image and runs Redis and chat server
-containers.
-
-------------------------------------------------------------------------
-
-# 16. Thread Safety
-
-Shared data structures are protected using:
-
-    threading.Lock()
-
-This prevents race conditions when multiple threads access shared
-resources.
-
-------------------------------------------------------------------------
-
-# 17. Conclusion
-
-This project demonstrates a **secure distributed chat server
-architecture** using:
-
--   Threaded TCP networking
--   Authentication with bcrypt
--   Chat rooms
--   Publish--Subscribe messaging
--   Redis distributed state
--   TLS encrypted communication
--   Docker container deployment
-
-The implementation provides a scalable foundation for real‑world
-messaging systems.
+This implementation demonstrates a complete threaded chat server with authentication, rooms, and publish–subscribe messaging, forming a strong foundation for distributed extensions using Redis.

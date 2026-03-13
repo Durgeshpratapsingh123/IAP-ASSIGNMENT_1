@@ -1,31 +1,53 @@
 import socket
-import ssl
 import threading
 
-HOST = "127.0.0.1"
-PORT = 9000
+SERVER_HOST = "127.0.0.1"
+SERVER_PORT = 9000
 
-def receive(sock):
+
+def receive_messages(sock):
     while True:
         try:
             msg = sock.recv(1024)
             if not msg:
                 break
-            print(msg.decode().strip())
+            print("\r" + msg.decode().rstrip())
+            print("> ", end="", flush=True)
         except:
             break
 
-context = ssl.create_default_context()
-context.check_hostname = False
-context.verify_mode = ssl.CERT_NONE
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock = context.wrap_socket(sock)
+def main():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((SERVER_HOST, SERVER_PORT))
 
-sock.connect((HOST, PORT))
+    # Server greeting
+    print(sock.recv(1024).decode().strip())
+    print(sock.recv(1024).decode().strip())
 
-threading.Thread(target=receive, args=(sock,), daemon=True).start()
+    # Login
+    login_cmd = input("> ")
+    sock.sendall(login_cmd.encode())
 
-while True:
-    msg = input()
-    sock.sendall(msg.encode())
+    response = sock.recv(1024).decode()
+    print(response)
+
+    if "successful" not in response:
+        sock.close()
+        return
+
+    # Start receiving messages
+    threading.Thread(
+        target=receive_messages,
+        args=(sock,),
+        daemon=True
+    ).start()
+
+    # Send messages
+    while True:
+        msg = input("> ")
+        sock.sendall(msg.encode())
+
+
+if __name__ == "__main__":
+    main()
